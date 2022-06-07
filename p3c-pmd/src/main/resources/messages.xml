@@ -554,5 +554,10 @@
     <entry key="java.other.AvoidDoubleOrFloatEqualCompareRule.rule.msg">
         <![CDATA[浮点数之间的等值判断，基本数据类型不能用==来比较，包装数据类型不能用equals来判断。]]>
     </entry>
-
+    <entry key="java.other.ServiceInvokeInLoopRule.violation.msg">
+        <![CDATA[方法【%s】存在疑似循环中调用数据库存储、远程访问等情况。 ]]>
+    </entry>
+    <entry key="java.other.ServiceInvokeInLoopRule.rule.msg">
+        <![CDATA[说明：原则上不允许在循环中访问数据库或者远程资源。]]>
+    </entry>
 </properties>

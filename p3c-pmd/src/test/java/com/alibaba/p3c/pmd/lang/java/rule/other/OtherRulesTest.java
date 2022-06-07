@@ -15,6 +15,7 @@
  */
 package com.alibaba.p3c.pmd.lang.java.rule.other;
 
+import net.sourceforge.pmd.Rule;
 import net.sourceforge.pmd.testframework.SimpleAggregatorTst;
 import org.junit.Test;
 
@@ -38,9 +39,15 @@ public class OtherRulesTest extends SimpleAggregatorTst {
         addRule(RULESET, "MethodTooLongRule");
         addRule(RULESET,"UseRightCaseForDateFormatRule");
         addRule(RULESET,"AvoidDoubleOrFloatEqualCompareRule");
+        addRule(RULESET,"ServiceInvokeInLoopRule");
     }
 
 
+    @Test
+    public void serviceInvokeInLoopRuleTest(){
+        Rule rule = this.findRule(RULESET,"ServiceInvokeInLoopRule");
+        runTests(rule,"ServiceInvokeInLoopRule");
+    }
 
 
 }

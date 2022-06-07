@@ -4,6 +4,34 @@
     xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
     xsi:schemaLocation="http://pmd.sourceforge.net/ruleset/2.0.0 http://pmd.sourceforge.net/ruleset_2_0_0.xsd">
     <description>AlibabaJavaOthers</description>
+    <rule name="ServiceInvokeInLoopRule"
+          language="java"
+          message="java.other.ServiceInvokeInLoopRule.rule.msg"
+          class="com.alibaba.p3c.pmd.lang.java.rule.other.ServiceInvokeInLoopRule">
+        <!--级别，1强制，2推荐，3参考-->
+        <priority>1</priority>
+
+        <example>
+            <![CDATA[
+Negative example:
+    public void methodB() {
+        for(){
+            mapper.save()
+        }
+    }
+]]>
+        </example>
+        <example>
+            <![CDATA[
+Positive example:
+    public void methodA() {
+        for(){
+            rpc.select()
+        }
+    }
+]]>
+        </example>
+    </rule>
 
     <rule name="AvoidPatternCompileInMethodRule" language="java"
         message="java.other.AvoidPatternCompileInMethodRule.rule.msg"

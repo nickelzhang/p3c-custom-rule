@@ -1,0 +1,880 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<test-data xmlns="http://pmd.sourceforge.net/rule-tests"
+           xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+           xsi:schemaLocation="http://pmd.sourceforge.net/rule-tests https://pmd.sourceforge.io/rule-tests_1_0_0.xsd">
+
+    <code-fragment id="service-invoke-in-loop">
+        <![CDATA[
+
+package com.changan.ev.maintenance.service.impl;
+
+import cn.hutool.core.bean.BeanUtil;
+import cn.hutool.core.date.DateUtil;
+import cn.hutool.core.util.StrUtil;
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
+import com.changan.ev.common.api.Result;
+import com.changan.ev.common.exception.ServiceLogicException;
+import com.changan.ev.common.util.UserInfoContext;
+import com.changan.ev.common.vo.UserVo;
+import com.changan.ev.iam.api.OrgUserApi;
+import com.changan.ev.iam.api.ShopApi;
+import com.changan.ev.iam.domain.dto.MyShopInfoDTO;
+import com.changan.ev.iam.domain.dto.OrgUserDTO;
+import com.changan.ev.iam.domain.query.ShopQuery;
+import com.changan.ev.maintenance.api.OrderCenterApi;
+import com.changan.ev.maintenance.constant.MaintenanceConstant;
+import com.changan.ev.maintenance.constant.ModuleNumConstant;
+import com.changan.ev.maintenance.domain.dcs.dto.CarInfoMeDTO;
+import com.changan.ev.maintenance.domain.dcs.query.CarInfoMeParam;
+import com.changan.ev.maintenance.domain.dto.*;
+import com.changan.ev.maintenance.domain.entity.MaintOperationLog;
+import com.changan.ev.maintenance.domain.entity.OrderSummary;
+import com.changan.ev.maintenance.domain.entity.RepairOrder;
+import com.changan.ev.maintenance.domain.entity.RepairProjectRecord;
+import com.changan.ev.maintenance.domain.enums.ProjcetItemEnums;
+import com.changan.ev.maintenance.domain.enums.RepairOrderStateEnums;
+import com.changan.ev.maintenance.domain.enums.ResultCode;
+import com.changan.ev.maintenance.domain.enums.SourceEnums;
+import com.changan.ev.maintenance.domain.orderCenter.dto.OrderInfoSListResDTO;
+import com.changan.ev.maintenance.domain.orderCenter.param.OrderInfoCListParam;
+import com.changan.ev.maintenance.domain.param.AddRepairOrderParam;
+import com.changan.ev.maintenance.domain.query.AddRepairEvaluateQuery;
+import com.changan.ev.maintenance.domain.query.OrderInfoParam;
+import com.changan.ev.maintenance.domain.query.RepairOrderAllQuery;
+import com.changan.ev.maintenance.domain.vo.*;
+import com.changan.ev.maintenance.mapper.RepairOrderMapper;
+import com.changan.ev.maintenance.service.*;
+import com.changan.ev.maintenance.util.SequenceUtils;
+import com.changan.ev.member.api.MemberApi;
+import com.changan.ev.member.domain.dto.MemberDTO;
+import com.deepexi.util.config.Payload;
+import com.deepexi.util.pageHelper.PageBean;
+import io.swagger.annotations.ApiModelProperty;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+import javax.annotation.Resource;
+import java.math.BigDecimal;
+import java.math.RoundingMode;
+import java.sql.SQLIntegrityConstraintViolationException;
+import java.util.ArrayList;
+import java.util.Date;
+import java.util.List;
+/**
+ *
+ *
+ * 2022-04-15 10:56:25
+ */
+@Slf4j
+@Service
+public class RepairOrderServiceImpl extends ServiceImpl<RepairOrderMapper, RepairOrder> implements IRepairOrderService {
+
+    private int ERROR_NUM = 3;//编号重复失败次数
+
+    @Autowired
+    private ShopApi shopApi;
+
+    @Autowired
+    private IRepairDamageInfoService repairDamageInfoService;
+
+    @Autowired
+    private IRepairFaultInfoService repairFaultInfoService;
+
+    @Autowired
+    private IRepairProjectRecordService repairProjectRecordService;
+
+    @Autowired
+    private IRepairProjectItemService repairProjectItemService;
+
+    @Autowired
+    private IRepairProjectItemMaterialService repairProjectItemMaterialService;
+
+    @Autowired
+    private  IRepairDispatchingService repairDispatchingService;
+
+    @Autowired
+    private  IMaintOperationLogService maintOperationLogService;
+
+    @Autowired
+    private IReservationOrderService reservationOrderService;
+
+    @Resource
+    private IDcsService dcsService;
+
+    @Resource
+    private OrgUserApi orgUserApi;
+
+    @Resource
+    private OrderCenterApi orderCenterApi;
+
+    @Resource
+    private IOrderSummaryService orderSummaryService;
+
+    @Resource
+    private MemberApi memberApi;
+
+    @Resource
+    private IHousekeeperServiceImpl housekeeperService;
+
+    @Override
+    public PageBean<RepairOrderDTO> search(RepairOrderAllQuery repairOrderQuery, boolean is){
+        PageBean<RepairOrder> page = this.page(repairOrderQuery);
+        List<RepairOrderDTO> repairOrderDTOList = BeanUtil.copyToList(page.getContent(),RepairOrderDTO.class);
+        for(RepairOrderDTO dto : repairOrderDTOList){
+            if(is){
+                if(StrUtil.isNotBlank(dto.getCustomerMobile())){
+                    dto.setCustomerMobile(dto.getCustomerMobile().replaceAll("(\\d{3})\\d{4}(\\d{4})", "$1****$2"));
+                }
+                if(StrUtil.isNotBlank(dto.getSendPhone())){
+                    dto.setSendPhone(dto.getSendPhone().replaceAll("(\\d{3})\\d{4}(\\d{4})", "$1****$2"));
+                }
+            }
+            if(dto.getMaterialSum() != null && dto.getServicesSum() != null){
+                dto.setCostSum(dto.getMaterialSum().add(dto.getServicesSum()).setScale(2, RoundingMode.HALF_UP));
+            }
+        }
+
+//        Page<RepairOrderDTO> pageBean = new Page<>(repairOrderQuery.getPage(), repairOrderQuery.getSize(), rows);
+        PageBean<RepairOrderDTO> pageBean = BeanUtil.copyProperties(page,PageBean.class);
+        pageBean.setContent(repairOrderDTOList);
+        return pageBean;
+    }
+
+    @Override
+    public List<MaintOrderInfoDTO> getOrderInfo(OrderInfoParam param) {
+        //维保订单获取
+//        RepairOrderDTO repairOrderDTO = this.findLastOrderByVin(param.getVin());
+        RepairOrderAllQuery query = BeanUtil.copyProperties(param, RepairOrderAllQuery.class);
+        query.setSize(5000L);
+        PageBean<RepairOrderDTO> page = this.search(query, false);
+        if(page != null && page.getContent() != null && page.getContent().size() > 0){
+            //有维保订单优先拿维保
+            List<MaintOrderInfoDTO> list = BeanUtil.copyToList(page.getContent(), MaintOrderInfoDTO.class);
+            List<MaintOrderInfoDTO> rsList = new ArrayList<>();
+//            list.forEach(MaintOrderInfoDTO );
+            //代码去重
+            for(MaintOrderInfoDTO infoDTO : list){
+                boolean is = false;
+                for(MaintOrderInfoDTO dto :rsList){
+                    if(infoDTO.hashCodevin() == dto.hashCodevin()){
+                        is = true;
+                        break;
+                    }
+                }
+                if(!is){
+                    rsList.add(infoDTO);
+                }
+            }
+            return rsList;
+        }
+
+        //订单中心获取
+        //会员中心获取用户id
+        Long memberId = param.getMemberId();
+        MemberDTO memberDTO = null;
+        if(memberId == null){
+            memberDTO = this.getMenberByPhone(param.getCustomerMobile());
+        } else {
+            memberDTO = this.getMenberById(memberId);
+        }
+        OrderInfoCListParam orderParam = new OrderInfoCListParam();
+        orderParam.setMemberId(memberDTO.getId());
+//        orderParam.setPhone(param.getCustomerMobile());
+        Result<List<OrderInfoSListResDTO>> rs = orderCenterApi.orderMainInfoCsList(orderParam);
+        if(rs != null && rs.getData() != null && rs.getData().size() > 0){
+            return getMaintOrderInfoDTO(rs.getData(), memberDTO);
+        }
+        //仍然没有,返回会员中心信息
+        List<MaintOrderInfoDTO> list = new ArrayList<>();
+        MaintOrderInfoDTO dto = new MaintOrderInfoDTO();
+        dto.setMemberId(memberDTO.getId());
+        dto.setCustomerMobile(memberDTO.getMobile());
+        dto.setCustomerName(memberDTO.getName());
+        list.add(dto);
+        return list;
+//        return orderCenterApi.orderMainInfoCsList();
+        //DCS获取车辆信息
+//        return this.getCarInfoDTO(param.getShopId(), param.getVin());
+    }
+
+    private MemberDTO getMenberByPhone(String phone){
+        Payload<MemberDTO> dto = memberApi.getMenberByPhone(phone);
+        if(dto == null || dto.getPayload() == null){
+            throw new ServiceLogicException(ResultCode.MAINT_REPAIR_ORDER_USER_NOT_FOUND);
+        }
+        return dto.getPayload();
+    }
+
+    private MemberDTO getMenberById(Long id){
+        Payload<MemberDTO> dto = memberApi.getMemberByMemberId(id);
+        if(dto == null || dto.getPayload() == null){
+            throw new ServiceLogicException(ResultCode.MAINT_REPAIR_ORDER_USER_NOT_FOUND);
+        }
+        return dto.getPayload();
+    }
+
+    @Override
+    public MaintOrderInfoDTO getCarInfo( String vin) {
+        MyShopInfoDTO myShopInfoDTO = this.getShop();
+        return this.getCarInfoDTO(myShopInfoDTO.getDcsDealerId()+"", vin);
+    }
+
+    private List<MaintOrderInfoDTO> getMaintOrderInfoDTO(List<OrderInfoSListResDTO> orderList, MemberDTO memberDTO){
+        List<MaintOrderInfoDTO> list = new ArrayList<>();
+        for(OrderInfoSListResDTO dto : orderList){
+            MaintOrderInfoDTO infoDTO = new MaintOrderInfoDTO();
+            infoDTO.setCustomerMobile(dto.getCustPhone());
+            infoDTO.setCustomerName(dto.getCustName());
+            if(memberDTO != null){
+                infoDTO.setMemberId(memberDTO.getId());
+                infoDTO.setCustomerMobile(memberDTO.getMobile());
+                infoDTO.setCustomerName(memberDTO.getName());
+            }else{
+                infoDTO.setMemberId(dto.getCustomerId());
+                infoDTO.setCustomerMobile(dto.getCustPhone());
+                infoDTO.setCustomerName(dto.getCustName());
+            }
+            infoDTO.setCarCategoryId(dto.getCarSeriesId());
+            infoDTO.setCarCategoryName(dto.getCarSeries());
+            infoDTO.setCarBrandName(dto.getBrandName());
+            infoDTO.setCarTypeId(dto.getCarModelId());
+            infoDTO.setCarTypeCode(dto.getCarMaterialCode());
+            infoDTO.setCarTypeName(dto.getCarModel());
+            infoDTO.setEngineNo(dto.getCarEngineNumber());
+            infoDTO.setVin(dto.getCarVinNumber());
+            infoDTO.setProductionTime(dto.getCarDeliveryTime());
+            infoDTO.setPickUpTime(dto.getCarAppointmentTime());
+            list.add(infoDTO);
+        }
+        return list;
+    }
+
+    @Override
+    public PageBean<AppRepairOrderDTO> appSearch(RepairOrderAllQuery repairOrderQuery) {
+        List<AppRepairOrderDTO> repairOrderDTOList = BeanUtil.copyToList(this.page(repairOrderQuery).getContent(),AppRepairOrderDTO.class);
+        PageBean<AppRepairOrderDTO> pageBean = new PageBean<>(repairOrderDTOList);
+        return pageBean;
+    }
+
+    @Override
+    public List<RepairXlsDTO> exportXls(RepairOrderAllQuery repairOrderQuery) {
+        List<RepairXlsDTO> repairOrderDTOList = BeanUtil.copyToList(this.page(repairOrderQuery).getContent(),RepairXlsDTO.class);
+        for(RepairXlsDTO xlsDTO : repairOrderDTOList){
+//            RepairOrderStateEnums enumItem = (RepairOrderStateEnums)Enum.Parse(typeof(RepairOrderStateEnums), ddl.SelectedValue);
+            xlsDTO.setRepairStateName(RepairOrderStateEnums.getEnums(xlsDTO.getRepairState()).getDesc());
+        }
+        return repairOrderDTOList;
+    }
+
+    @Override
+    public RepairOrderDTO findLastOrderByVin(String vin) {
+        LambdaQueryWrapper<RepairOrder> lambda = new QueryWrapper<RepairOrder>().lambda();
+        lambda.eq(RepairOrder::getVin,vin);
+        lambda.orderByDesc(RepairOrder::getCreatedTime);
+        List<RepairOrder> repairOrderList = this.list(lambda);
+        if(repairOrderList == null || repairOrderList.size() == 0){
+            return null;
+        }
+        RepairOrderDTO repairOrderDTO = new RepairOrderDTO();
+        BeanUtil.copyProperties(repairOrderList.get(0),repairOrderDTO);
+        return repairOrderDTO;
+    }
+
+    @Override
+    public void cancel(RepairOrder repairOrder, String cancelReason) {
+        repairOrder.setCancelReason(cancelReason);
+        this.updateState(repairOrder, "取消工单", RepairOrderStateEnums.CANCEL.getCode());
+    }
+
+    @Override
+    public void updateState(Long id, String context, int state) {
+        RepairOrder repairOrder = this.getById(id);
+        this.updateState(repairOrder, context, state);
+    }
+
+    @Override
+    @Transactional(rollbackFor = RuntimeException.class)
+    public void updateState(RepairOrder repairOrder, String context, int state) {
+        if(repairOrder == null){
+            throw new ServiceLogicException(ResultCode.MAINT_REPAIR_ORDER_NOT_FIND);
+        }
+        Integer oldState = repairOrder.getRepairState();
+        repairOrder.setRepairState(state);
+        this.updateById(repairOrder);
+        //日志埋点
+        maintOperationLogService.save(this.getMaintOperationLog(repairOrder, RepairOrderStateEnums.getEnums(repairOrder.getRepairState()).getDesc(), oldState));
+        //同步订单汇总表
+        orderSummaryService.updateState(repairOrder.getId(), SourceEnums.REPAIR.getCode(),
+                repairOrder.getRepairState(), RepairOrderStateEnums.getEnums(repairOrder.getRepairState()).getDesc());
+        try {
+            //管家同步,后续改为异步mq同步,不管管家是否成功,不影响工单保存
+            housekeeperService.updateMaintenanceWorkStatus(repairOrder);
+        } catch (Exception e){
+            log.error("管家同步状态失败");
+        }
+    }
+
+    @Override
+    @Transactional(rollbackFor = RuntimeException.class)
+    public void updateStateSettlement(RepairOrder repairOrder, String context) {
+        if(repairOrder == null){
+            throw new ServiceLogicException(ResultCode.MAINT_REPAIR_ORDER_NOT_FIND);
+        }
+        Integer oldState = repairOrder.getRepairState();
+        repairOrder.setRepairState(RepairOrderStateEnums.ACCEPTANCE.getCode());
+        this.updateSettlementNumByRepairOrder(repairOrder);
+        //日志埋点
+        //本地调试注释掉
+        maintOperationLogService.save(this.getMaintOperationLog(repairOrder, context, oldState));
+        try {
+            //管家同步,后续改为异步mq同步,不管管家是否成功,不影响工单保存
+            housekeeperService.updateMaintenanceWorkStatus(repairOrder);
+        } catch (Exception e){
+            log.error("管家同步状态失败");
+        }
+    }
+
+    @Override
+    @Transactional(rollbackFor = RuntimeException.class)
+    public void updateStateProject(RepairOrder repairOrder, String context) {
+        if(repairOrder == null){
+            throw new ServiceLogicException(ResultCode.MAINT_REPAIR_ORDER_NOT_FIND);
+        }
+        Integer oldState = repairOrder.getRepairState();
+        repairOrder.setRepairState(RepairOrderStateEnums.PROJECT.getCode());
+        this.updateProjectNumByRepairOrder(repairOrder);
+        //日志埋点
+        maintOperationLogService.save(this.getMaintOperationLog(repairOrder, context, oldState));
+        try {
+            //管家同步,后续改为异步mq同步,不管管家是否成功,不影响工单保存
+            housekeeperService.updateMaintenanceWorkStatus(repairOrder);
+        } catch (Exception e){
+            log.error("管家同步状态失败");
+        }
+    }
+
+    @Override
+    public MaintOperationLog getMaintOperationLog(RepairOrder repairOrder, String context, Integer oldState){
+        MyShopInfoDTO shopInfoDTO = this.getShop();
+        MaintOperationLog maintOperationLog = BeanUtil.copyProperties(repairOrder, MaintOperationLog.class,MaintenanceConstant.COLUMN_ALL);
+        OrgUserDTO userDTO = orgUserApi.getOrgUserById(UserInfoContext.getUserId());
+        if(userDTO == null){
+            throw new ServiceLogicException(ResultCode.MAINT_REPAIR_ORDER_USER_NOT_NULL);
+        }
+//        maintOperationLog.setId(null);
+        maintOperationLog.setRepairId(repairOrder.getId());
+        maintOperationLog.setOperationId(userDTO.getId());
+        maintOperationLog.setOperationName(userDTO.getName());
+        maintOperationLog.setShopId(Long.valueOf(shopInfoDTO.getDcsDealerId()));
+        maintOperationLog.setShopName(shopInfoDTO.getName());
+        maintOperationLog.setOperationPost(userDTO.getPost());
+        maintOperationLog.setOrderStateOld(oldState);
+        maintOperationLog.setOrderState(repairOrder.getRepairState());
+        maintOperationLog.setContent(context);
+        return maintOperationLog;
+    }
+
+    @Override
+    public RepairDataStatisticsDTO getDataStatistics() {
+        MyShopInfoDTO shop = this.getShop();
+        RepairDataStatisticsDTO repairDataStatisticsDTO = new RepairDataStatisticsDTO();
+        //完成数量
+        repairDataStatisticsDTO.setFinishedNumber(this.countByState(Long.valueOf(shop.getDcsDealerId()), RepairOrderStateEnums.INCAR.getCode()));
+        repairDataStatisticsDTO.setWaitProjectConfirmNumber(this.countByState(Long.valueOf(shop.getDcsDealerId()), RepairOrderStateEnums.PROJECT.getCode()));
+        repairDataStatisticsDTO.setWaitCustomerConfirmNumber(this.countByState(Long.valueOf(shop.getDcsDealerId()), RepairOrderStateEnums.CONFIRM.getCode()));
+        repairDataStatisticsDTO.setWaitDispatchNumber(this.countByState(Long.valueOf(shop.getDcsDealerId()), RepairOrderStateEnums.CONFIRM.getCode()));
+        repairDataStatisticsDTO.setWaitFinishedNumber(this.countByState(Long.valueOf(shop.getDcsDealerId()), RepairOrderStateEnums.DISPATCHING.getCode()));
+        repairDataStatisticsDTO.setWaitDeliveryNumber(this.countByState(Long.valueOf(shop.getDcsDealerId()), RepairOrderStateEnums.SETTLEMENT.getCode()));
+        return repairDataStatisticsDTO;
+    }
+
+    @Override
+    @Transactional(rollbackFor = RuntimeException.class)
+    public RepairOrder add(AddRepairOrderParam param) {
+        RepairOrder repairOrder = BeanUtil.copyProperties(param,RepairOrder.class);
+//        repairOrder.setRepairNum(SequenceUtils.getNum(ModuleNumConstant.REPAIRORDER_NUM_FINAL));
+        repairOrder.setRepairState(RepairOrderStateEnums.CREATE.getCode());
+        //获取门店信息,前端获取门店信息,后台暂时不需要
+//        this.getShopInfo(repairOrder);
+        MyShopInfoDTO shopInfoDTO = this.getShop();
+        repairOrder.setShopId(Long.valueOf(shopInfoDTO.getDcsDealerId()));
+//        repairOrder.setShopCode(shopInfoDTO.)
+        repairOrder.setShopName(shopInfoDTO.getName());
+        //DCS效验驱动电机号
+        //DCS效验门店是否具备车辆维修能力
+        CarInfoMeDTO carInfo = dcsService.getCarInfoMe(new CarInfoMeParam(repairOrder.getShopId().toString(), repairOrder.getVin()));
+        if(carInfo == null ){
+            throw new ServiceLogicException(ResultCode.MAINT_REPAIR_ORDER_SAVE_NOT_SHOP_FAIL);
+        }
+        if(!param.getEngineNo().equals(carInfo.getEngineNo())){
+            throw new ServiceLogicException(ResultCode.MAINT_REPAIR_ORDER_SAVE_ENGINENO_FAIL);
+        }
+        repairOrder.setMaintNum(carInfo.getTime());
+        repairOrder.setProductionTime(carInfo.getProductDate());
+        repairOrder.setBuyTime(carInfo.getPurchasedDate());
+//        carInfo.getConsignationDate()
+        //回填回厂时间
+        RepairOrderDTO repairOrderDTO = this.findLastOrderByVin(repairOrder.getVin());
+        if(repairOrderDTO != null){
+            if(repairOrderDTO.getMaterialSum() != null && repairOrderDTO.getMaterialSum().compareTo(BigDecimal.ZERO) == 0){
+                repairOrder.setLastMileage(repairOrderDTO.getMaterialSum());
+            }else{
+                //上次如果是没到环检取消,就获取上次的上次里程
+                repairOrder.setLastMileage(repairOrderDTO.getLastMileage());
+            }
+        }
+        //添加创建人信息
+        UserVo userVo = UserInfoContext.getData();
+        if(userVo == null){
+            throw new ServiceLogicException(ResultCode.MAINT_REPAIR_ORDER_USER_NOT_NULL);
+        }
+        if(StrUtil.isBlank(param.getSendPhone())){
+            repairOrder.setSendPhone(repairOrder.getCustomerMobile());
+        }
+        if(StrUtil.isBlank(param.getSendName())){
+            repairOrder.setSendName(repairOrder.getCustomerName());
+        }
+        repairOrder.setOwnerId(userVo.getUserId());
+        repairOrder.setOwnerName(userVo.getUserName());
+        this.addRepairOrder(repairOrder);
+        maintOperationLogService.save(this.getMaintOperationLog(repairOrder, RepairOrderStateEnums.CREATE.getDesc(), RepairOrderStateEnums.CREATE.getCode()));
+        //同步预约信息
+        if(repairOrder.getReservationId() != null && repairOrder.getReservationId().longValue() != 0){
+            reservationOrderService.saveRepairOderInfo(repairOrder.getReservationId(), repairOrder.getRepairNum(), repairOrder.getId());
+        }
+        //同步到订单汇总表中
+        OrderSummary orderSummary = BeanUtil.copyProperties(repairOrder, OrderSummary.class, MaintenanceConstant.COLUMN_ALL);
+//        orderSummary.setId(null);
+        orderSummary.setSource(SourceEnums.REPAIR.getCode());
+        orderSummary.setSourceState(RepairOrderStateEnums.CREATE.getCode());
+        orderSummary.setSourceId(repairOrder.getId());
+        orderSummary.setSourceStateName(RepairOrderStateEnums.CREATE.getDesc());
+        orderSummary.setSourceNum(repairOrder.getRepairNum());
+        orderSummary.setCustomerPhone(repairOrder.getCustomerMobile());
+        orderSummaryService.save(orderSummary);
+        try {
+            //管家同步,后续改为异步mq同步,不管管家是否成功,不影响工单保存
+            housekeeperService.createMaintenanceWork(repairOrder);
+        } catch (Exception e){
+            log.error("管家同步创建工单失败");
+        }
+        return repairOrder;
+    }
+
+    @Override
+    public RepairOrderBulletinBoardVo getBulletinBoard() {
+        RepairOrderBulletinBoardVo vo = new RepairOrderBulletinBoardVo();
+        MyShopInfoDTO shop = this.getShop();
+        vo.setWaitRepairNumber(this.countByState(Long.valueOf(shop.getDcsDealerId()), RepairOrderStateEnums.DISPATCHING.getCode()));
+        vo.setRepairingNumber(this.countByState(Long.valueOf(shop.getDcsDealerId()), RepairOrderStateEnums.MAINTENANCE.getCode()));
+        vo.setQcNumber(this.countByState(Long.valueOf(shop.getDcsDealerId()), RepairOrderStateEnums.INSPECTION.getCode()));
+        vo.setWaitDeliveryNumber(this.countByState(Long.valueOf(shop.getDcsDealerId()), RepairOrderStateEnums.SETTLEMENT.getCode()));
+
+        RepairOrderAllQuery repairOrderQuery = new RepairOrderAllQuery();
+        Date date = new Date();
+        repairOrderQuery.setCreatedStartDate(DateUtil.beginOfDay(date));
+        repairOrderQuery.setCreatedEndDate(DateUtil.endOfDay(date));
+        repairOrderQuery.setShopId(Long.valueOf(shop.getDcsDealerId()));
+        repairOrderQuery.setRepairState(RepairOrderStateEnums.DISPATCHING.getCode().toString() + ","
+                + RepairOrderStateEnums.MAINTENANCE.getCode().toString() + ","
+                + RepairOrderStateEnums.INSPECTION.getCode().toString() + ","
+                + RepairOrderStateEnums.SETTLEMENT.getCode());
+        repairOrderQuery.setSize(200L);
+        PageBean<RepairOrder> page = this.page(repairOrderQuery);
+        vo.setList(BeanUtil.copyToList(page.getContent(), RepairOrderBulletinBoardVo.RepairInfo.class));
+        return vo;
+    }
+
+    @Override
+    public RepairOrderDetailsVo getDetailedById(Long id, boolean isRingcheck, boolean isServiceProject,
+                                                boolean isDispatching, boolean isLog) {
+        RepairOrderDetailsVo detailsVo = this.getDetailed(id, isRingcheck, isServiceProject, isDispatching, isLog);
+        List<RepairProjectItemDTO> projectItemList = new ArrayList<>();
+        List<RepairProjectItemMaterialVo> materialList = new ArrayList<>();
+        List<String> marketNameList = new ArrayList<>();
+        if(detailsVo.getProjectItemList()!= null && detailsVo.getProjectItemList().size() > 0){
+            for(RepairProjectItemDTO itemDTO : detailsVo.getProjectItemList()){
+                if(ProjcetItemEnums.OUT.getCode() == itemDTO.getProjectType()){
+                    //外出维修只能有一个
+                    //数据装箱
+                    RepairProjectItemVo itemVo = BeanUtil.copyProperties(itemDTO, RepairProjectItemVo.class);
+                    this.getMaterialVoList(itemVo,detailsVo.getMaterialList());
+                    //存储外出维修
+                    RepairProjectItemVo outInfo = BeanUtil.copyProperties(itemDTO, RepairProjectItemVo.class);
+                    outInfo.setMaterialVoList(itemVo.getMaterialVoList());
+                    detailsVo.setOutItemVo(outInfo);
+                }else{
+                    //过滤掉外出维修基本信息
+                    projectItemList.add(itemDTO);
+                }
+                if(ProjcetItemEnums.MARKET.getCode() == itemDTO.getProjectType()){
+                    //市场行动名字记录
+                    if(itemDTO.getMarketName() != null && !marketNameList.contains(itemDTO.getMarketName())){
+                        marketNameList.add(itemDTO.getMarketName());
+                    }
+                }
+            }
+        }
+        if(detailsVo.getMaterialList()!= null && detailsVo.getMaterialList().size() > 0){
+            for(RepairProjectItemMaterialVo materialVo : detailsVo.getMaterialList()){
+                if(ProjcetItemEnums.OUTFEE.getCode() != materialVo.getProjectType()){
+                    //过滤掉外出维修附加项数据
+                    materialList.add(materialVo);
+                }
+            }
+        }
+        detailsVo.setMarketNameList(marketNameList);
+        return detailsVo;
+    }
+
+    private RepairOrderDetailsVo getDetailed(Long id, boolean isRingcheck, boolean isServiceProject,
+                                             boolean isDispatching, boolean isLog){
+        RepairOrderDetailsVo vo = new RepairOrderDetailsVo();
+        RepairOrder repairOrder = this.getById(id);
+        vo.setRepairOrder(BeanUtil.copyProperties(repairOrder,RepairOrderDTO.class));
+        //环检
+        if(isRingcheck){
+            RingcheckDTO ringcheckDTO = new RingcheckDTO();
+            ringcheckDTO.setDamageInfoList(BeanUtil.copyToList(repairDamageInfoService.findByRepairId(id), RepairDamageInfoDTO.class));
+            ringcheckDTO.setRepairFaultInfoList(BeanUtil.copyToList(repairFaultInfoService.findLastByRepairId(id), RepairFaultInfoDTO.class));
+            vo.setRingcheckDTO(ringcheckDTO);
+        }
+        //项目
+        Integer batch = null;
+        if(isServiceProject){
+//            vo.setServiceProjectDTO(repairProjectRecordService.findLastDTOByRepairId(id));
+//            if(vo.getServiceProjectDTO() != null){
+//                batch = vo.getServiceProjectDTO().getBatch();
+//            }
+            RepairProjectRecord repairProjectRecord = repairProjectRecordService.findLastByRepairId(id);
+            if(repairProjectRecord != null){
+//                throw new ServiceLogicException(ResultCode.MAINT_REPAIR_ORDER_DATA_ERROR);
+                batch = repairProjectRecord.getBatch();
+                vo.setProjectItemList(repairProjectItemService.findDTOByRepairId(id, batch));
+                vo.setMaterialList(repairProjectItemMaterialService.findByfindByRepairIdsId(id, repairProjectRecord.getBatch()));
+            }
+        }
+        //派工信息
+        if(isServiceProject && isDispatching && batch != null){
+            vo.setRepairDispatchingDTO(repairDispatchingService.findLastByRepairId(id, batch));
+        }
+        //操作日志
+        if(isLog){
+            vo.setOperationLogList(BeanUtil.copyToList(maintOperationLogService.findByRepairId(id), MaintOperationLogDTO.class));
+        }
+        return vo;
+    }
+
+    @Override
+    public RepairOrderItemDetailVo getOldDetailedById(Long id) {
+        RepairOrderItemDetailVo vo = new RepairOrderItemDetailVo();
+        RepairOrder repairOrder = this.getById(id);
+        vo.setRepairOrder(BeanUtil.copyProperties(repairOrder,RepairOrderDTO.class));
+        //项目
+        vo.setServiceProjectDTO(repairProjectRecordService.findLastDTOByRepairId(id));
+        return vo;
+    }
+
+    @Override
+    public ProjectDTO getProject(Long id) {
+        ProjectDTO vo = new ProjectDTO();
+        RepairOrder repairOrder = this.getById(id);
+        vo.setRepairOrder(BeanUtil.copyProperties(repairOrder,RepairOrderDTO.class));
+        //项目
+//        vo.setServiceProjectDTO(repairProjectRecordService.findLastDTOByRepairId(id));
+        RepairOrderDetailsVo detailsVo = this.getDetailedById(id, false, true, false, false);
+
+        ProjectDTO dto = new ProjectDTO();
+        dto.setRepairOrder(detailsVo.getRepairOrder());
+        List<RepairProjectItemVo> maintenanceList = new ArrayList<>();
+        List<RepairProjectItemVo> generalList = new ArrayList<>();
+        List<RepairProjectItemVo> preSaleList = new ArrayList<>();
+        RepairProjectItemVo outInfo = new RepairProjectItemVo();
+        List<RepairProjectItemMaterialVo> outAdditionalList = new ArrayList<>();
+        List<RepairProjectItemVo> outItemVoList = new ArrayList<>();
+        List<RepairProjectItemVo> marketList = new ArrayList<>();
+        List<RepairProjectItemVo> specialList = new ArrayList<>();
+        if(detailsVo.getProjectItemList()!= null && detailsVo.getProjectItemList().size() > 0){
+            for(RepairProjectItemDTO itemDTO : detailsVo.getProjectItemList()){
+                RepairProjectItemVo itemVo = BeanUtil.copyProperties(itemDTO, RepairProjectItemVo.class);
+                this.getMaterialVoList(itemVo,detailsVo.getMaterialList());
+                switch (ProjcetItemEnums.getEnums(itemDTO.getProjectType())){
+                    case MAINTENANCE :
+                        maintenanceList.add(itemVo);
+                        break;
+                    case GENERAL :
+                        generalList.add(itemVo);
+                        break;
+                    case OUT :
+                        outInfo = itemVo;
+                        break;
+                    case OUTPROJECT :
+                        outItemVoList.add(itemVo);
+                        break;
+                    case PRESALE :
+                        preSaleList.add(itemVo);
+                        break;
+                    case MARKET :
+                        marketList.add(itemVo);
+                        break;
+                    case SPECIAL :
+                        specialList.add(itemVo);
+                        break;
+                    default: break;
+                }
+            }
+            for(RepairProjectItemMaterialVo materialVo : detailsVo.getMaterialList()){
+                if(ProjcetItemEnums.OUTPROJECT.getCode() == materialVo.getProjectType()){
+                    outAdditionalList.add(materialVo);
+                }
+            }
+            vo.setMaintenanceList(maintenanceList);
+            vo.setGeneralList(generalList);
+            vo.setOutInfo(outInfo);
+//            vo.setOutAdditionalList(outAdditionalList);
+            vo.setOutItemVoList(outItemVoList);
+            vo.setPreSaleList(preSaleList);
+            vo.setMarketList(marketList);
+            vo.setSpecialList(specialList);
+        }
+        return vo;
+    }
+
+    private void getMaterialVoList(RepairProjectItemVo itemVo, List<RepairProjectItemMaterialVo> materialList){
+        List<RepairProjectItemMaterialVo> materialVoList = new ArrayList<>();
+        for(RepairProjectItemMaterialVo materialVo : materialList){
+            if(itemVo.getId().longValue() == materialVo.getProjectItemId()){
+                materialVoList.add(materialVo);
+            }
+        }
+        itemVo.setMaterialVoList(materialVoList);
+    }
+
+    @Override
+    public void addRepairEvaluate(AddRepairEvaluateQuery query) {
+        RepairOrder repairOrder = this.getById(query.getRepairId());
+        if(repairOrder == null){
+            throw new ServiceLogicException(ResultCode.MAINT_REPAIR_ORDER_NOT_FIND);
+        }
+        BeanUtil.copyProperties(query, repairOrder, MaintenanceConstant.COLUMN_ALL);
+        this.updateById(repairOrder);
+    }
+
+    /**
+     * 项目保存
+     * @param repairOrder
+     */
+    @Override
+    public void updateProjectNumByRepairOrder(RepairOrder repairOrder) {
+        for(int i = 0; i < ERROR_NUM; i++){
+            repairOrder.setProjectNum(SequenceUtils.getNum(ModuleNumConstant.PROJECT_NUM_FINAL));
+            try{
+                this.updateById(repairOrder);
+                return;
+            } catch (Exception e){
+                if(e.getCause() instanceof SQLIntegrityConstraintViolationException) {
+                    log.error("唯一约束不通过");
+                    continue;
+                }
+                //非唯一约束不捕获,异常上抛
+                throw new RuntimeException(e);
+            }
+        }
+        //工单编号唯一约束3次失败,抛异常,数据回滚
+        throw new ServiceLogicException(ResultCode.MAINT_REPAIR_ORDER_NOT_FIND);
+    }
+
+    /**
+     * 结算单保存
+     * @param repairOrder
+     */
+    @Override
+    public void updateSettlementNumByRepairOrder(RepairOrder repairOrder) {
+        for(int i = 0; i < ERROR_NUM; i++){
+            repairOrder.setSettlementNo(SequenceUtils.getNum(ModuleNumConstant.SETTLEMENT_NUM_FINAL));
+            try{
+                this.updateById(repairOrder);
+                return;
+            } catch (Exception e){
+                if(e.getCause() instanceof SQLIntegrityConstraintViolationException) {
+                    log.error("唯一约束不通过");
+                    continue;
+                }
+                //非唯一约束不捕获,异常上抛
+                throw new RuntimeException(e);
+            }
+        }
+        //工单编号唯一约束3次失败,抛异常,数据回滚
+        throw new ServiceLogicException(ResultCode.MAINT_REPAIR_ORDER_NOT_FIND);
+    }
+
+    /**
+     * 分页查询
+     * @param repairOrderQuery
+     * @return
+     */
+    private PageBean<RepairOrder> page(RepairOrderAllQuery repairOrderQuery){
+        LambdaQueryWrapper<RepairOrder> lambda = new QueryWrapper<RepairOrder>().lambda();
+        if(StrUtil.isNotBlank(repairOrderQuery.getOwnerName())){
+            lambda.like(RepairOrder::getOwnerName, repairOrderQuery.getOwnerName());
+        }
+        if(repairOrderQuery.getMemberId() != null){
+            lambda.eq(RepairOrder::getMemberId, repairOrderQuery.getMemberId());
+        }
+        if(StrUtil.isNotBlank(repairOrderQuery.getCustomerMobile())){
+            lambda.eq(RepairOrder::getCustomerMobile, repairOrderQuery.getCustomerMobile());
+        }
+        if(StrUtil.isNotBlank(repairOrderQuery.getCustomerPhone())){
+            lambda.like(RepairOrder::getCustomerMobile, repairOrderQuery.getCustomerPhone());
+        }
+        if(StrUtil.isNotBlank(repairOrderQuery.getCustomerName())){
+            lambda.like(RepairOrder::getCustomerName, repairOrderQuery.getCustomerName());
+        }
+        if(StrUtil.isNotBlank(repairOrderQuery.getRepairNum())){
+            lambda.like(RepairOrder::getRepairNum, repairOrderQuery.getRepairNum());
+        }
+        if(StrUtil.isNotBlank(repairOrderQuery.getRepairState())){
+            String[] state = repairOrderQuery.getRepairState().split(",");
+            lambda.in(RepairOrder::getRepairState, state);
+        }
+        if(StrUtil.isNotBlank(repairOrderQuery.getLicensePlate())){
+            lambda.like(RepairOrder::getLicensePlate, repairOrderQuery.getLicensePlate());
+        }
+        if(StrUtil.isNotBlank(repairOrderQuery.getCarTypeName())){
+            lambda.like(RepairOrder::getCarTypeName, repairOrderQuery.getCarTypeName());
+        }
+        if(StrUtil.isNotBlank(repairOrderQuery.getCarTypeCode())){
+            lambda.like(RepairOrder::getCarTypeCode, repairOrderQuery.getCarTypeCode());
+        }
+        if(repairOrderQuery.getShopId() != null){
+            lambda.eq(RepairOrder::getShopId, repairOrderQuery.getShopId());
+        }
+        if(StrUtil.isNotBlank(repairOrderQuery.getShopName())){
+            lambda.like(RepairOrder::getShopName, repairOrderQuery.getShopName());
+        }
+        if(repairOrderQuery.getNextMaintStartTime() != null && repairOrderQuery.getNextMaintEndTime() != null){
+            lambda.between(RepairOrder::getNextMaintTime, repairOrderQuery.getNextMaintStartTime(),repairOrderQuery.getNextMaintEndTime());
+        }
+        if(repairOrderQuery.getCreatedStartDate() != null && repairOrderQuery.getCreatedEndDate() != null){
+            lambda.between(RepairOrder::getCreatedTime, repairOrderQuery.getCreatedStartDate(),repairOrderQuery.getCreatedEndDate());
+        }
+        lambda.orderByDesc(RepairOrder::getCreatedTime);
+        Page<RepairOrder> pageParam = new Page<>(repairOrderQuery.getPage(), repairOrderQuery.getSize());
+        PageBean<RepairOrder> pageBean = new PageBean<>(this.page(pageParam, lambda));
+        return pageBean;
+    }
+
+    private int countByState(long shopId, int state){
+        LambdaQueryWrapper<RepairOrder> lambda = new QueryWrapper<RepairOrder>().lambda();
+        lambda.eq(RepairOrder::getShopId,shopId);
+        Date date = new Date();
+        lambda.between(RepairOrder::getCreatedTime,DateUtil.beginOfDay(date), DateUtil.endOfDay(date));
+        lambda.eq(RepairOrder::getRepairState, state);
+        return this.count(lambda);
+    }
+
+    /**
+     * 工单保存
+     * @param repairOrder
+     */
+    private void addRepairOrder(RepairOrder repairOrder) {
+        for(int i = 0; i < ERROR_NUM; i++){
+            repairOrder.setRepairNum(SequenceUtils.getNum(ModuleNumConstant.REPAIRORDER_NUM_FINAL));
+            try{
+                this.save(repairOrder);
+                return;
+            } catch (Exception e){
+                if(e.getCause() instanceof SQLIntegrityConstraintViolationException) {
+                    log.error("唯一约束不通过");
+                    continue;
+                }
+                //非唯一约束不捕获,异常上抛
+                throw new RuntimeException(e);
+            }
+        }
+        //工单编号唯一约束3次失败,抛异常,数据回滚
+        throw new ServiceLogicException(ResultCode.MAINT_REPAIR_ORDER_NOT_FIND);
+    }
+
+    /**
+     * dcs获取车辆信息
+     * @param shopId
+     * @param vin
+     * @return
+     */
+    private MaintOrderInfoDTO getCarInfoDTO(String shopId, String vin){
+        MaintOrderInfoDTO carInfoDTO = new MaintOrderInfoDTO();
+        CarInfoMeDTO meDTO = dcsService.getCarInfoMe(new CarInfoMeParam(shopId, vin));
+        carInfoDTO.setVin(vin);
+        carInfoDTO.setEngineNo(meDTO.getEngineNo());
+        carInfoDTO.setLicensePlate(meDTO.getLicenseNo());
+        carInfoDTO.setCarBrandName(meDTO.getBrandName());
+        carInfoDTO.setCarCategoryId(meDTO.getSeriesId());
+//        carInfoDTO.setCarCategoryCode(meDTO.getSeriesId());
+        carInfoDTO.setCarCategoryName(meDTO.getSeriesName());
+        carInfoDTO.setCarTypeId(meDTO.getModelId());
+        carInfoDTO.setCarTypeCode(meDTO.getModelCode());
+        carInfoDTO.setCarTypeName(meDTO.getModelName());
+//        carInfoDTO.setBuyTime(meDTO.getPurchasedDate());
+        carInfoDTO.setProductionTime(meDTO.getProductDate());
+        carInfoDTO.setPickUpTime(meDTO.getConsignationDate());
+        return carInfoDTO;
+    }
+
+    @Override
+    public MyShopInfoDTO getShop(){
+        ShopQuery shopQuery = new ShopQuery();
+        shopQuery.setChannel("3");
+        shopQuery.setUserId(UserInfoContext.getUserId());
+        log.info("--------------------------getShop:" +UserInfoContext.getUserId());
+        List<MyShopInfoDTO> shopInfoDTOS = shopApi.queryShopByChannel(shopQuery);
+        log.info("--------------------------shopInfoDTOS:" + shopInfoDTOS.toString());
+        if(shopInfoDTOS == null || shopInfoDTOS.size() == 0){
+            log.info("--------------------------没找到门店信息------------------------");
+            throw new ServiceLogicException(ResultCode.MAINT_REPAIR_ORDER_SHOP_NOT_NULL);
+        }
+        for(MyShopInfoDTO dto : shopInfoDTOS){
+            if(dto.getType() == 2){
+                return dto;
+            }
+        }
+        //如果没有对应类型数据,报异常
+        throw new ServiceLogicException(ResultCode.MAINT_REPAIR_ORDER_SHOP_NOT_NULL);
+    }
+
+}
+
+
+
+		]]>
+    </code-fragment>
+    <code-fragment id="testDemo2">
+        <![CDATA[
+	package org.p3c.demo;
+
+	public class Demo {
+
+		public void methodA(int a) {
+
+		}
+
+		public void methodB(int a, int b, int c, int d, int e) {
+
+		}
+	}
+		]]>
+    </code-fragment>
+    <test-code>
+        <description>原则上不允许在循环中访问数据库或者远程资源</description>
+
+        <!-- 预期问题个数 -->
+        <expected-problems>0</expected-problems>
+        <code-ref id="service-invoke-in-loop" />
+    </test-code>
+
+</test-data>
