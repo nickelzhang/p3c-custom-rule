@@ -46,6 +46,7 @@ public class ServiceInvokeInLoopRule extends AbstractAliRule {
                 }
             }
         } catch (Exception e) {
+            System.out.println("ServiceInvokeInLoopRule检查出现异常");
             e.printStackTrace();
         }
         return super.visit(node, data);
