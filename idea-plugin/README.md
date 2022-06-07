@@ -6,10 +6,10 @@
 
 ## <font color="green">Build</font>
 ```
-cd p3c-idea
-../gradlew clean buildPlugin
+cd idea-plugin
+./gradlew clean buildPlugin
 ```
-
+然后p3c-idea中build/distributions里面的zip安装
 ## <font color="green">Run plugin</font>
 
 ```
